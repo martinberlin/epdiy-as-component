@@ -8,11 +8,14 @@
 #include "epd_highlevel.h"
 #include "epdiy.h"
 #include <driver/i2c.h>
+#include <driver/gpio.h>
 #include "board/tps65185.h"
 EpdiyHighlevelState hl;
 
 float MAX_TEMP = 29.0;
 bool powered = true;
+#define IO_HIGH_TEMP GPIO_NUM_1
+
 // Task running all the time in the background
 void vTaskCheckTemperature( void * pvParameters )
 {
@@ -27,10 +30,12 @@ void vTaskCheckTemperature( void * pvParameters )
       }
       
       if (temp > MAX_TEMP) {
+          gpio_set_level(IO_HIGH_TEMP, 0);
           ESP_LOGW("WARNING", "Temperature overheat (Major than %.1f)", MAX_TEMP);
           powered = false;
           epd_poweroff();
       } else {
+        gpio_set_level(IO_HIGH_TEMP, 1);
         ESP_LOGI("TPS temp", "%.1f °C power:%d", temp, (int)powered);
       }
     }
@@ -58,6 +63,9 @@ void idf_setup() {
     epd_set_vcom(1560);
     hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
     epd_poweron();
+    gpio_set_direction(IO_HIGH_TEMP, GPIO_MODE_OUTPUT);
+    // Turn OFF, on 0 gives GND to LED
+    gpio_set_level(IO_HIGH_TEMP, 1);
 
     static uint8_t ucParameterToPass;
     TaskHandle_t xHandle = NULL;

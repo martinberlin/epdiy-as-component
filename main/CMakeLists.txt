@@ -6,10 +6,10 @@ message(STATUS "→ Building example for ${target}")
 
 set(EXTRA_COMPONENT_DIRS components/ssd1306)
 # Select one source example to build
-set(app_sources "dragon-temp/main/main.c") # Just to draw something
+#set(app_sources "dragon-temp/main/main.c") # Just to draw something
 
 # 1 Only VCOM kickback reading via Serial output: idf.py monitor
-#set(app_sources "vcom-kickback/main/main.c")
+set(app_sources "vcom-kickback/main/main.c")
 
 # 2 VCOM kickback reading + output to I2C display ssd1306
 #set(app_sources "vcom-kickback-display/main/main.c")
