@@ -5,7 +5,9 @@
 *****************************************************************************************************************/
 #define TEST_DEVICE_NAME "BLE_JPG_10"
 #define ADC_VOLTAGE_READ
-#define RV3032_INT_PIN    3
+
+#include "driver/rtc_io.h"
+#define RV3032_INT_PIN  GPIO_NUM_3
 
 #include <cstdint>
 #include <inttypes.h>
@@ -19,6 +21,7 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "esp_bt.h"
+#include "esp_sleep.h"
 #include <math.h> // round + pow
 static const char* TAG = "BLE";
 
@@ -40,8 +43,8 @@ BBRTC rtc;
 // Declare ASCII names for each of the supported RTC types
 const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
 // RTC Alarms
-uint8_t sleep_alarm_hour = 12;
-uint8_t sleep_alarm_min = 27;
+uint8_t sleep_alarm_hour = 19;
+uint8_t sleep_alarm_min = 0;
 
 uint8_t wake_alarm_hour = 7;
 uint8_t wake_alarm_min = 0;
@@ -50,6 +53,7 @@ uint8_t rtc_day = 0;
 // Declare the rtc_alarm_triggered variable as volatile if it can be changed from ISR or another task
 volatile bool rtc_alarm_triggered = false;
 
+struct tm myTime;
 bool rtc_enabled = true; // Will be false if rtc.init fails
 
 // Copy decoded JPG directly in framebuffer
@@ -59,6 +63,7 @@ bool rtc_enabled = true; // Will be false if rtc.init fails
 // EPD Driver epdiy
 #include "epd_highlevel.h"
 #include "epdiy.h"
+#include "firasans_12.h"
 EpdiyHighlevelState hl;
 enum EpdDrawError _err;
 uint8_t * fb; // EPD 4bpp buffer
@@ -110,6 +115,16 @@ uint32_t received_length = 0;
 #define DOWNLOAD_PROGRESS_BAR true
 uint8_t progressBarHeight = 20;
 
+void write_text(int x, int y, char* text) {
+    const EpdFont* font = &FiraSans_12;
+    EpdFontProperties font_props = epd_font_properties_default();
+    font_props.flags = EPD_DRAW_ALIGN_CENTER;
+
+    char text_str[64];
+    sprintf(text_str, text);
+    epd_write_string(font, text_str, &x, &y, fb, &font_props);
+}
+
 // Task that loops every 10 seconds and checks rtc_alarm_triggered
 void rtc_alarm_check_task(void *pvParameter)
 {
@@ -118,7 +133,25 @@ void rtc_alarm_check_task(void *pvParameter)
             printf("RTC alarm was triggered!\n");
             // Optionally reset the alarm flag
             rtc_alarm_triggered = false;
-            // Go to deep_sleep but wake with RTC_INT ->LOW
+            rtc.clearAlarms();
+            // And set the morning wake-up
+            myTime.tm_hour = wake_alarm_hour;
+            myTime.tm_min = wake_alarm_min;
+            rtc.setAlarm(ALARM_TIME, &myTime);
+            
+            // Enable hold to keep the GPIO HIGH during deep sleep
+            rtc_gpio_hold_en(RV3032_INT_PIN);
+            write_text(10, epd_height()-20, (char*)"DURMIENDO");
+            EpdRect rectangle = {
+                .x = 10,
+                .y = epd_height()-30,
+                .width = 150,
+                .height = 30
+            };
+            epd_hl_update_area(&hl, MODE_DU, 25, rectangle);
+  
+            vTaskDelay(500 / portTICK_PERIOD_MS);
+            esp_deep_sleep_start();
             // And keep RTC_INT ->HIGH while sleeping (since there is no ext. pullup)
         }
         vTaskDelay(10000 / portTICK_PERIOD_MS); // 10 seconds
@@ -926,12 +959,6 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
     } while (0);
 }
 
-// TODO Check if this is still relevant
-void write_text(int x, int y, char* text) {
-    //epd_write_string
-    //display.setCursor(x, y);
-}
-
 extern "C" void IRAM_ATTR rtc_int_isr_handler(void* arg) {
     rtc_alarm_triggered = true;
 }
@@ -948,7 +975,7 @@ void rtc_int_gpio_init() {
     // gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
 
     ESP_LOGI("RTC", "Attaching ISR handler...");
-    ESP_ERROR_CHECK(gpio_isr_handler_add((gpio_num_t)RV3032_INT_PIN, rtc_int_isr_handler, NULL));
+    ESP_ERROR_CHECK(gpio_isr_handler_add(RV3032_INT_PIN, rtc_int_isr_handler, NULL));
 }
 
 // Flag to know that we've synced the hour with timeQuery request
@@ -962,7 +989,6 @@ void app_main(void)
     epd_set_rotation(EPD_ROT_LANDSCAPE);
     epd_set_vcom(1560);
     // Init RTC and initialize INT Gpio
-    struct tm myTime;
     // -1 avoids I2C init since is already done by epdiy component
     int rc = rtc.init(-1, -1);
     
@@ -980,6 +1006,9 @@ void app_main(void)
         aTime.tm_hour = sleep_alarm_hour;
         aTime.tm_min = sleep_alarm_min;
         rtc.setAlarm(ALARM_TIME, &aTime);
+        // Enable wakeup on RTC IO low (i.e., when RTC alarm triggers)
+        esp_sleep_enable_ext1_wakeup(1ULL << RV3032_INT_PIN, ESP_EXT1_WAKEUP_ALL_LOW);
+
         // Create the task with a stack size of 2048 and priority 5
         xTaskCreate(&rtc_alarm_check_task, "rtc_alarm_check_task", 2048, NULL, 5, NULL);
     }
