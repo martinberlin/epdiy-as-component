@@ -4,6 +4,10 @@
 *
 *****************************************************************************************************************/
 #define TEST_DEVICE_NAME "BLE_JPG_10"
+#define ADC_VOLTAGE_READ
+#define RV3032_INT_PIN    3
+
+#include <cstdint>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,12 +21,37 @@
 #include "esp_bt.h"
 #include <math.h> // round + pow
 static const char* TAG = "BLE";
+
+// HTTP Client + time
+#include "esp_http_client.h"
+#include "esp_netif.h"
+#include "esp_sntp.h"
 // BLE Libraries
 #include "esp_gap_ble_api.h"
 #include "esp_gatts_api.h"
 #include "esp_bt_defs.h"
 #include "esp_bt_main.h"
 #include "esp_gatt_common_api.h"
+
+// RTC
+#include "driver/i2c.h"
+#include <bb_rtc.h>
+BBRTC rtc;
+// Declare ASCII names for each of the supported RTC types
+const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
+// RTC Alarms
+uint8_t sleep_alarm_hour = 12;
+uint8_t sleep_alarm_min = 27;
+
+uint8_t wake_alarm_hour = 7;
+uint8_t wake_alarm_min = 0;
+
+uint8_t rtc_day = 0;
+// Declare the rtc_alarm_triggered variable as volatile if it can be changed from ISR or another task
+volatile bool rtc_alarm_triggered = false;
+
+bool rtc_enabled = true; // Will be false if rtc.init fails
+
 // Copy decoded JPG directly in framebuffer
 // On true for some displays will be mirrored
 // On true rotation is not supported
@@ -80,6 +109,55 @@ uint32_t received_length = 0;
 // And also writes in the same framebuffer as the image
 #define DOWNLOAD_PROGRESS_BAR true
 uint8_t progressBarHeight = 20;
+
+// Task that loops every 10 seconds and checks rtc_alarm_triggered
+void rtc_alarm_check_task(void *pvParameter)
+{
+    while (1) {
+        if (rtc_alarm_triggered) {
+            printf("RTC alarm was triggered!\n");
+            // Optionally reset the alarm flag
+            rtc_alarm_triggered = false;
+            // Go to deep_sleep but wake with RTC_INT ->LOW
+            // And keep RTC_INT ->HIGH while sleeping (since there is no ext. pullup)
+        }
+        vTaskDelay(10000 / portTICK_PERIOD_MS); // 10 seconds
+    }
+}
+
+// Time sync by NTP. Currently not used since I didn't want to add WiFi here (Might get deleted)
+void time_sync_notification_cb(struct timeval* tv) {
+    ESP_LOGI(TAG, "Notification of a time synchronization event");
+}
+
+static void initialize_sntp(void) {
+    ESP_LOGI(TAG, "Initializing SNTP");
+    sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    sntp_setservername(0, "pool.ntp.org");
+    sntp_set_time_sync_notification_cb(time_sync_notification_cb);
+#ifdef CONFIG_SNTP_TIME_SYNC_METHOD_SMOOTH
+    sntp_set_sync_mode(SNTP_SYNC_MODE_SMOOTH);
+#endif
+    sntp_init();
+}
+
+static void obtain_time(void) {
+    initialize_sntp();
+
+    // wait for time to be set
+    time_t now = 0;
+    struct tm timeinfo = { 0 };
+    int retry = 0;
+    const int retry_count = 10;
+    while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++retry < retry_count) {
+        ESP_LOGI(TAG, "Waiting for system time to be set... (%d/%d)", retry, retry_count);
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
+    }
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    // Set RTC time
+    rtc.setTime(&timeinfo);
+}
 
 // TJPG the decompressor inside S3 ROM
 //====================================================================================
@@ -652,15 +730,18 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
                 (param->write.value[2] << 8) +
                 (param->write.value[3] << 16) +
                 (param->write.value[4] << 24);
+                decoded_image = (uint8_t *)heap_caps_malloc(received_length, MALLOC_CAP_SPIRAM);
+            if (decoded_image == NULL) {
+                ESP_LOGE("main", "Initial alloc %ld bytes for decoded_image failed", received_length);
+            }
                 ESP_LOGI(GATTS_TAG, "0x01 content-lenght received: %ld", received_length);
-
-                esp_log_buffer_hex(GATTS_TAG, param->write.value, param->write.len);
+                //esp_log_buffer_hex(GATTS_TAG, param->write.value, param->write.len);
             }
             // 0x09 EOF
             if (param->write.len == 1 && param->write.value[0] == 0x09) {
                 is_short_cmd = true;
                 // Decode & render
-                ESP_LOGI(GATTS_TAG, "0x09 EOF received");
+                //ESP_LOGI(GATTS_TAG, "0x09 EOF received");
                 // Decode & render
                 time_receive = (esp_timer_get_time()-start_time)/1000;
                 drawBufJpeg(source_buf, 0, 0); // TJPEG
@@ -845,10 +926,29 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
     } while (0);
 }
 
+// TODO Check if this is still relevant
 void write_text(int x, int y, char* text) {
     //epd_write_string
     //display.setCursor(x, y);
-    
+}
+
+extern "C" void IRAM_ATTR rtc_int_isr_handler(void* arg) {
+    rtc_alarm_triggered = true;
+}
+
+void rtc_int_gpio_init() {
+	gpio_config_t io_conf = {};
+	io_conf.intr_type = GPIO_INTR_NEGEDGE; // Falling edge = INT̅ active
+	io_conf.mode = GPIO_MODE_INPUT;
+	io_conf.pin_bit_mask = (1ULL << RV3032_INT_PIN);
+	io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+	ESP_ERROR_CHECK(gpio_config(&io_conf));
+    // Already initialized by epdiy
+    // gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+
+    ESP_LOGI("RTC", "Attaching ISR handler...");
+    ESP_ERROR_CHECK(gpio_isr_handler_add((gpio_num_t)RV3032_INT_PIN, rtc_int_isr_handler, NULL));
 }
 
 // Flag to know that we've synced the hour with timeQuery request
@@ -856,10 +956,47 @@ int16_t nvs_boots = 0;
 
 void app_main(void)
 {
+    printf("BLE RTC version 1.1\n");
     epd_init(&epd_board_v7_103, &ED078KC1, EPD_LUT_64K);
     //epd_init(&epd_board_v7, &ED097TC2, EPD_LUT_64K);
     epd_set_rotation(EPD_ROT_LANDSCAPE);
     epd_set_vcom(1560);
+    // Init RTC and initialize INT Gpio
+    struct tm myTime;
+    // -1 avoids I2C init since is already done by epdiy component
+    int rc = rtc.init(-1, -1);
+    
+    if (rc != RTC_SUCCESS) {
+        rtc_enabled = false;
+        printf("Error initializing the RTC. Night Deepsleep disabled\n");
+    } else {
+        rtc_int_gpio_init();
+        // RTC Clear current alarms and get time
+        rtc.clearAlarms();
+        rtc.getTime(&myTime);
+        rtc.setVBackup(true);
+        struct tm aTime = myTime;
+        // Set HH:MM alarm to sleep at night
+        aTime.tm_hour = sleep_alarm_hour;
+        aTime.tm_min = sleep_alarm_min;
+        rtc.setAlarm(ALARM_TIME, &aTime);
+        // Create the task with a stack size of 2048 and priority 5
+        xTaskCreate(&rtc_alarm_check_task, "rtc_alarm_check_task", 2048, NULL, 5, NULL);
+    }
+
+    rtc_day = myTime.tm_mday;
+    printf("%02d:%02d:%02d DAY:%d M:%d\n\n", myTime.tm_hour, myTime.tm_min, myTime.tm_sec, myTime.tm_mday, myTime.tm_mon);
+    // Lazy way since ideally time should be set by BLE
+    if (rtc_enabled && myTime.tm_mday == 4 && myTime.tm_mon == 0) {
+        //obtain_time();
+        myTime.tm_hour = 11;
+        myTime.tm_min = 45;
+        myTime.tm_mday= 18;
+        myTime.tm_mon = 9;
+        myTime.tm_year = 2025;
+        rtc.setTime(&myTime);
+    } 
+
     hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
     fb = epd_hl_get_framebuffer(&hl);
     double gammaCorrection = 1.0 / gamma_value;
@@ -878,11 +1015,6 @@ void app_main(void)
     source_buf = (uint8_t *)heap_caps_malloc(epd_width() * 250, MALLOC_CAP_SPIRAM);
     if (source_buf == NULL) {
         ESP_LOGE("main", "Initial alloc source_buf failed!");
-    }
-
-    decoded_image = (uint8_t *)heap_caps_malloc(epd_width()/2 *epd_height(), MALLOC_CAP_SPIRAM);
-    if (decoded_image == NULL) {
-        ESP_LOGE("main", "Initial alloc decoded_image failed!");
     }
 
     esp_err_t ret;
