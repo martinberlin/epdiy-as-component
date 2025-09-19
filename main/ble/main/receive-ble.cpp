@@ -56,8 +56,6 @@ uint8_t sleep_alarm_min = 0;
 
 uint8_t wake_alarm_hour = 7;
 uint8_t wake_alarm_min = 0;
-
-uint8_t rtc_day = 0;
 // Declare the rtc_alarm_triggered variable as volatile if it can be changed from ISR or another task
 volatile bool rtc_alarm_triggered = false;
 
@@ -123,10 +121,11 @@ uint32_t received_length = 0;
 #define DOWNLOAD_PROGRESS_BAR true
 uint8_t progressBarHeight = 20;
 
-void write_text(int x, int y, char* text) {
+void write_text(int x, int y, char* text, int fg_color = 0) {
     const EpdFont* font = &FiraSans_20;
     EpdFontProperties font_props = epd_font_properties_default();
-    font_props.fg_color = 0;
+    font_props.fg_color = fg_color;
+    font_props.bg_color = 255;
     epd_write_string(font, text, &x, &y, fb, &font_props);
 }
 void update_area(int x, int y, int w, int h) {
@@ -136,20 +135,23 @@ void update_area(int x, int y, int w, int h) {
                 .width = w,
                 .height = h
             };
-            //epd_fill_rect(rectangle, 0, fb); //DEBUG
     epd_poweron();
     epd_hl_update_area(&hl, MODE_DU, 25, rectangle);
     epd_poweroff();
 }
-void clean_area(int x, int y, int w, int h) {
+void clean_area(int x, int y, int w, int h, int color = 0) {
     EpdRect rectangle = {
                 .x = x,
                 .y = y,
                 .width = w,
                 .height = h
             };
-    epd_fill_rect(rectangle, 255, fb);
-    //epd_hl_update_area(&hl, MODE_DU, 25, rectangle);
+    epd_fill_rect(rectangle, 0, fb);
+    epd_hl_update_area(&hl, MODE_DU, 25, rectangle);
+    epd_fill_rect(rectangle, color, fb);
+    epd_poweron();
+    epd_hl_update_area(&hl, MODE_DU, 25, rectangle);
+    epd_poweroff();
 }
 // Task that loops every 10 seconds and checks rtc_alarm_triggered
 void rtc_alarm_check_task(void *pvParameter)
@@ -1038,6 +1040,8 @@ void app_main(void)
         printf("Error initializing the RTC. Night Deepsleep disabled\n");
     } else {
         rtc_int_gpio_init();
+
+        rtc.getTime(&myTime);
         // RTC Clear current alarms and get time
         rtc.clearAlarms();
         rtc.setVBackup(true);
@@ -1045,6 +1049,11 @@ void app_main(void)
         // Set HH:MM alarm to sleep at night
         aTime.tm_hour = sleep_alarm_hour;
         aTime.tm_min = sleep_alarm_min;
+        // WEEKENDS: Save battery
+        if (myTime.tm_wday > 5) {
+            // Be awake only 2 hr over weekends
+            aTime.tm_hour = wake_alarm_hour+2;
+        }
         rtc.setAlarm(ALARM_TIME, &aTime);
         // Enable wakeup on RTC IO low (i.e., when RTC alarm triggers)
         esp_sleep_enable_ext1_wakeup(1ULL << RV3032_INT_PIN, ESP_EXT1_WAKEUP_ALL_LOW);
@@ -1052,24 +1061,22 @@ void app_main(void)
         // Create the task with a stack size of 2048 and priority 5
         xTaskCreate(&rtc_alarm_check_task, "rtc_alarm_check_task", 2048, NULL, 5, NULL);
     }
-
-    rtc.getTime(&myTime);
-    rtc_day = myTime.tm_mday;
     char date[60];
-    sprintf(date, "AWAKE %02d:%02d %d %s Bat:%d %%\n\n", myTime.tm_hour, myTime.tm_min, myTime.tm_mday, months[myTime.tm_mon], batt_level);
-    printf("%s\n", date);
+    sprintf(date, "AWAKE %02d:%02d %d %s Bat:%d %%", myTime.tm_hour, myTime.tm_min, myTime.tm_mday, months[myTime.tm_mon], batt_level);
+    printf("%s WDAY:%d\n", date, myTime.tm_wday);
     // Attention: write_text needs the high level API started (epd_hl_init)
-    clean_area(epd_width()-550, epd_height()-40, 500, 40);
-    write_text(epd_width()-550, epd_height()-10, date);
+    clean_area(0, epd_height()-38, epd_width(), 38, 255);
+    write_text(epd_width()-550, epd_height()-10, date, 0);
     update_area(0, epd_height()-38, epd_width(), 38);
     
     // Lazy way since ideally time should be set by BLE
-    if (rtc_enabled && myTime.tm_mday == 1 && myTime.tm_mon == 0) {
+    if (rtc_enabled && myTime.tm_mday == 19 && myTime.tm_mon == 9 && myTime.tm_wday == 0) {
         //obtain_time();
         printf("RTC SET TIME\n\n");
-        myTime.tm_hour = 13;
-        myTime.tm_min = 39;
+        myTime.tm_hour = 15;
+        myTime.tm_min = 31;
         myTime.tm_mday= 19;
+        myTime.tm_wday= 5;
         myTime.tm_mon = 9;
         myTime.tm_year = 2025;
         rtc.setTime(&myTime);
