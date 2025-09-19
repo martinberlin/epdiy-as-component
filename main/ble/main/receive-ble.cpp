@@ -29,6 +29,9 @@ static const char* TAG = "BLE";
 #include "esp_http_client.h"
 #include "esp_netif.h"
 #include "esp_sntp.h"
+// ADC battery level
+#include "adc_batt.c"
+int batt_level = 10;
 // BLE Libraries
 #include "esp_gap_ble_api.h"
 #include "esp_gatts_api.h"
@@ -42,6 +45,11 @@ static const char* TAG = "BLE";
 BBRTC rtc;
 // Declare ASCII names for each of the supported RTC types
 const char *szType[] = {"Unknown", "PCF8563", "DS3231", "RV3032", "PCF85063A"};
+// Array of 3-letter Spanish month abbreviations
+const char *months[] = {
+    "0", "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", // 9 - Septiembre
+    "oct", "nov", "dic"  // 12 - Diciembre
+};
 // RTC Alarms
 uint8_t sleep_alarm_hour = 19;
 uint8_t sleep_alarm_min = 0;
@@ -63,7 +71,7 @@ bool rtc_enabled = true; // Will be false if rtc.init fails
 // EPD Driver epdiy
 #include "epd_highlevel.h"
 #include "epdiy.h"
-#include "firasans_12.h"
+#include "firasans_20.h"
 EpdiyHighlevelState hl;
 enum EpdDrawError _err;
 uint8_t * fb; // EPD 4bpp buffer
@@ -116,15 +124,33 @@ uint32_t received_length = 0;
 uint8_t progressBarHeight = 20;
 
 void write_text(int x, int y, char* text) {
-    const EpdFont* font = &FiraSans_12;
+    const EpdFont* font = &FiraSans_20;
     EpdFontProperties font_props = epd_font_properties_default();
-    font_props.flags = EPD_DRAW_ALIGN_CENTER;
-
-    char text_str[64];
-    sprintf(text_str, text);
-    epd_write_string(font, text_str, &x, &y, fb, &font_props);
+    font_props.fg_color = 0;
+    epd_write_string(font, text, &x, &y, fb, &font_props);
 }
-
+void update_area(int x, int y, int w, int h) {
+    EpdRect rectangle = {
+                .x = x,
+                .y = y,
+                .width = w,
+                .height = h
+            };
+            //epd_fill_rect(rectangle, 0, fb); //DEBUG
+    epd_poweron();
+    epd_hl_update_area(&hl, MODE_DU, 25, rectangle);
+    epd_poweroff();
+}
+void clean_area(int x, int y, int w, int h) {
+    EpdRect rectangle = {
+                .x = x,
+                .y = y,
+                .width = w,
+                .height = h
+            };
+    epd_fill_rect(rectangle, 255, fb);
+    //epd_hl_update_area(&hl, MODE_DU, 25, rectangle);
+}
 // Task that loops every 10 seconds and checks rtc_alarm_triggered
 void rtc_alarm_check_task(void *pvParameter)
 {
@@ -141,14 +167,8 @@ void rtc_alarm_check_task(void *pvParameter)
             
             // Enable hold to keep the GPIO HIGH during deep sleep
             rtc_gpio_hold_en(RV3032_INT_PIN);
-            write_text(10, epd_height()-20, (char*)"DURMIENDO");
-            EpdRect rectangle = {
-                .x = 10,
-                .y = epd_height()-30,
-                .width = 150,
-                .height = 30
-            };
-            epd_hl_update_area(&hl, MODE_DU, 25, rectangle);
+            write_text(epd_width()-300, epd_height()-10, (char*)"DURMIENDO");
+            update_area(0, epd_height()-38, epd_width(), 38);
   
             vTaskDelay(500 / portTICK_PERIOD_MS);
             esp_deep_sleep_start();
@@ -485,6 +505,17 @@ void progressBar(long processed, long total)
   epd_hl_update_area(&hl, MODE_DU, 25, rectangle);
 }
 
+void progressBarClean() {
+    EpdRect rectangle = {
+        .x = 0,
+        .y = epd_height()-25,
+        .width = epd_width(),
+        .height = progressBarHeight
+    };
+    epd_fill_rect(rectangle, 255, fb);
+    epd_hl_update_area(&hl, MODE_DU, 25, rectangle);
+}
+
 //====================================================================================
 // This program contains support functions to render the Jpeg images
 //
@@ -777,6 +808,9 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
                 //ESP_LOGI(GATTS_TAG, "0x09 EOF received");
                 // Decode & render
                 time_receive = (esp_timer_get_time()-start_time)/1000;
+
+                // Override Progress bar with White
+                progressBarClean();
                 drawBufJpeg(source_buf, 0, 0); // TJPEG
                 //decodeJpeg(source_buf, 0, 0);// JPEGDEC
 
@@ -984,13 +1018,20 @@ int16_t nvs_boots = 0;
 void app_main(void)
 {
     printf("BLE RTC version 1.1\n");
+    
     epd_init(&epd_board_v7_103, &ED078KC1, EPD_LUT_64K);
     //epd_init(&epd_board_v7, &ED097TC2, EPD_LUT_64K);
     epd_set_rotation(EPD_ROT_LANDSCAPE);
     epd_set_vcom(1560);
+
+    adc_init();
+    vTaskDelay(pdMS_TO_TICKS(100));
+    batt_level = adc_read_batt();
     // Init RTC and initialize INT Gpio
     // -1 avoids I2C init since is already done by epdiy component
     int rc = rtc.init(-1, -1);
+    hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
+    fb = epd_hl_get_framebuffer(&hl);
     
     if (rc != RTC_SUCCESS) {
         rtc_enabled = false;
@@ -999,7 +1040,6 @@ void app_main(void)
         rtc_int_gpio_init();
         // RTC Clear current alarms and get time
         rtc.clearAlarms();
-        rtc.getTime(&myTime);
         rtc.setVBackup(true);
         struct tm aTime = myTime;
         // Set HH:MM alarm to sleep at night
@@ -1013,21 +1053,28 @@ void app_main(void)
         xTaskCreate(&rtc_alarm_check_task, "rtc_alarm_check_task", 2048, NULL, 5, NULL);
     }
 
+    rtc.getTime(&myTime);
     rtc_day = myTime.tm_mday;
-    printf("%02d:%02d:%02d DAY:%d M:%d\n\n", myTime.tm_hour, myTime.tm_min, myTime.tm_sec, myTime.tm_mday, myTime.tm_mon);
+    char date[60];
+    sprintf(date, "AWAKE %02d:%02d %d %s Bat:%d %%\n\n", myTime.tm_hour, myTime.tm_min, myTime.tm_mday, months[myTime.tm_mon], batt_level);
+    printf("%s\n", date);
+    // Attention: write_text needs the high level API started (epd_hl_init)
+    clean_area(epd_width()-550, epd_height()-40, 500, 40);
+    write_text(epd_width()-550, epd_height()-10, date);
+    update_area(0, epd_height()-38, epd_width(), 38);
+    
     // Lazy way since ideally time should be set by BLE
-    if (rtc_enabled && myTime.tm_mday == 4 && myTime.tm_mon == 0) {
+    if (rtc_enabled && myTime.tm_mday == 1 && myTime.tm_mon == 0) {
         //obtain_time();
-        myTime.tm_hour = 11;
-        myTime.tm_min = 45;
-        myTime.tm_mday= 18;
+        printf("RTC SET TIME\n\n");
+        myTime.tm_hour = 13;
+        myTime.tm_min = 39;
+        myTime.tm_mday= 19;
         myTime.tm_mon = 9;
         myTime.tm_year = 2025;
         rtc.setTime(&myTime);
     } 
 
-    hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
-    fb = epd_hl_get_framebuffer(&hl);
     double gammaCorrection = 1.0 / gamma_value;
     for (int gray_value =0; gray_value<256;gray_value++) {
         gamme_curve[gray_value]= round (255*pow(gray_value/255.0, gammaCorrection));
@@ -1070,7 +1117,7 @@ void app_main(void)
     if (nvs_boots%2 == 0) {
         // One boot yes, one no A - B test do something different
     }
-    int cursor_x = 10;
+    int cursor_x = epd_width()-400;
     int cursor_y = epd_height() - 60;
     
     write_text(cursor_x, cursor_y, (char*)"BLE initialized");
@@ -1085,6 +1132,7 @@ void app_main(void)
     if (ret) {
         ESP_LOGE(GATTS_TAG, "%s initialize controller failed: %s\n", __func__, esp_err_to_name(ret));
         write_text(cursor_x, cursor_y, (char*)"Initializing BLE controller failed");
+        update_area(cursor_x, cursor_y -10, 400, 60);
         return;
     }
 
