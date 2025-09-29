@@ -3,7 +3,7 @@
 * This demo showcases BLE GATT server. It can send adv data, be connected by client CALE.es (Only Chrome example)
 *
 *****************************************************************************************************************/
-#define TEST_DEVICE_NAME "BLE_JPG_10"
+#define TEST_DEVICE_NAME "BLE_JPG_103"
 #define ADC_VOLTAGE_READ
 
 #include "driver/rtc_io.h"
@@ -51,8 +51,8 @@ const char *months[] = {
     "oct", "nov", "dic"  // 12 - Diciembre
 };
 // RTC Alarms
-uint8_t sleep_alarm_hour = 19;
-uint8_t sleep_alarm_min = 0;
+uint8_t sleep_alarm_hour = 17;
+uint8_t sleep_alarm_min = 30;
 
 uint8_t wake_alarm_hour = 7;
 uint8_t wake_alarm_min = 0;
@@ -169,10 +169,14 @@ void rtc_alarm_check_task(void *pvParameter)
             
             // Enable hold to keep the GPIO HIGH during deep sleep
             rtc_gpio_hold_en(RV3032_INT_PIN);
-            write_text(epd_width()-300, epd_height()-10, (char*)"DURMIENDO");
+            char sleep_msg[40];
+            sprintf(sleep_msg, "DURMIENDO Wake: %d:%02d AM", wake_alarm_hour, wake_alarm_min);
+
+            clean_area(0, epd_height()-38, epd_width(), 38, 255);
+            write_text(epd_width()-550, epd_height()-10, sleep_msg, 0);
             update_area(0, epd_height()-38, epd_width(), 38);
   
-            vTaskDelay(500 / portTICK_PERIOD_MS);
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
             esp_deep_sleep_start();
             // And keep RTC_INT ->HIGH while sleeping (since there is no ext. pullup)
         }
@@ -402,8 +406,6 @@ static uint8_t adv_service_uuid128[16] = {
 };
 
 // The length of adv data must be less than 31 bytes
-//static uint8_t test_manufacturer[TEST_MANUFACTURER_DATA_LEN] =  {0x12, 0x23, 0x45, 0x56};
-//adv data
 static esp_ble_adv_data_t adv_data = {
     .set_scan_rsp = false,
     .include_name = true,
@@ -438,13 +440,17 @@ static esp_ble_adv_data_t scan_rsp_data = {
 
 #endif /* CONFIG_SET_RAW_ADV_DATA */
 
+/**
+ * @brief advertising configuration
+ * Increase advertising interval to the maximum allowed for your use case.
+ * Typical values for low power: 1000ms to 2000ms (0xA0 to 0x400).
+ * QUICK min: 0xA0   max: 0x40 filter_policy: ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY
+ */
 static esp_ble_adv_params_t adv_params = {
-    .adv_int_min        = 0x20,
-    .adv_int_max        = 0x40,
+    .adv_int_min = 0x400, // 640ms
+    .adv_int_max = 0x800, // 1280ms
     .adv_type           = ADV_TYPE_IND,
     .own_addr_type      = BLE_ADDR_TYPE_PUBLIC,
-    //.peer_addr            =
-    //.peer_addr_type       =
     .channel_map        = ADV_CHNL_ALL,
     .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
 };
@@ -1059,24 +1065,24 @@ void app_main(void)
         esp_sleep_enable_ext1_wakeup(1ULL << RV3032_INT_PIN, ESP_EXT1_WAKEUP_ALL_LOW);
 
         // Create the task with a stack size of 2048 and priority 5
-        xTaskCreate(&rtc_alarm_check_task, "rtc_alarm_check_task", 2048, NULL, 5, NULL);
+        xTaskCreate(&rtc_alarm_check_task, "rtc_alarm_check_task", 4000, NULL, 5, NULL);
     }
     char date[60];
-    sprintf(date, "AWAKE %02d:%02d %d %s Bat:%d %%", myTime.tm_hour, myTime.tm_min, myTime.tm_mday, months[myTime.tm_mon], batt_level);
-    printf("%s WDAY:%d\n", date, myTime.tm_wday);
+    sprintf(date, "AWAKE %02d:%02d %d %s Bat %d%%", myTime.tm_hour, myTime.tm_min, myTime.tm_mday, months[myTime.tm_mon], batt_level);
+    printf("%s WDAY:%d SLEEP at %02d:%02d\n", date, myTime.tm_wday, sleep_alarm_hour, sleep_alarm_min);
     // Attention: write_text needs the high level API started (epd_hl_init)
     clean_area(0, epd_height()-38, epd_width(), 38, 255);
     write_text(epd_width()-550, epd_height()-10, date, 0);
     update_area(0, epd_height()-38, epd_width(), 38);
     
     // Lazy way since ideally time should be set by BLE
-    if (rtc_enabled && myTime.tm_mday == 19 && myTime.tm_mon == 9 && myTime.tm_wday == 0) {
+    if (rtc_enabled && myTime.tm_mday==1 && myTime.tm_wday==0 && myTime.tm_hour==0) {
         //obtain_time();
         printf("RTC SET TIME\n\n");
-        myTime.tm_hour = 15;
-        myTime.tm_min = 31;
-        myTime.tm_mday= 19;
-        myTime.tm_wday= 5;
+        myTime.tm_hour = 16;
+        myTime.tm_min = 49;
+        myTime.tm_mday= 29;
+        myTime.tm_wday= 1;
         myTime.tm_mon = 9;
         myTime.tm_year = 2025;
         rtc.setTime(&myTime);
