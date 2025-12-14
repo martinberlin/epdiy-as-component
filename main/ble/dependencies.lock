@@ -1,7 +1,13 @@
 dependencies:
+  bitbank2/jpegdec:
+    component_hash: d1f2ee29cffb627bc54138ccbd0206389b9951ec75b45393cb298c446bfe30a7
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.6.2
   espressif/esp-dsp:
-    component_hash: 
-      42dce32d46ac93dc11f60d368e29a830e9661c7345d794b8a45c343479cae636
+    component_hash: 42dce32d46ac93dc11f60d368e29a830e9661c7345d794b8a45c343479cae636
     dependencies:
     - name: idf
       require: private
@@ -11,8 +17,7 @@ dependencies:
       type: service
     version: 1.7.0
   espressif/esp_tinyusb:
-    component_hash: 
-      6f1f0c140990bf27a86611e3c1f47f9fa8468bffc3bf1eb6d551cb09f31f8908
+    component_hash: 18cfcc83bc28b66f008007843a995a6b78d3293ac7befedc93371605e212a06b
     dependencies:
     - name: idf
       require: private
@@ -20,7 +25,7 @@ dependencies:
     - name: espressif/tinyusb
       registry_url: https://components.espressif.com
       require: public
-      version: '>=0.17.0~2'
+      version: '>=0.17.0'
     source:
       registry_url: https://components.espressif.com/
       type: service
@@ -28,11 +33,9 @@ dependencies:
     - esp32s2
     - esp32s3
     - esp32p4
-    - esp32h4
-    version: 2.0.1~1
+    version: 2.0.0
   espressif/tinyusb:
-    component_hash: 
-      5ea9d3b6d6b0734a0a0b3491967aa0e1bece2974132294dbda5dd2839b247bfa
+    component_hash: aa65639878f27a44d349044afd9c3fc134a92bd560874fdac1d836019b5c07ca
     dependencies:
     - name: idf
       require: private
@@ -44,16 +47,16 @@ dependencies:
     - esp32s2
     - esp32s3
     - esp32p4
-    - esp32h4
-    version: 0.19.0~2
+    version: 0.18.0~4
   idf:
     source:
       type: idf
-    version: 5.5.1
+    version: 5.4.1
 direct_dependencies:
+- bitbank2/jpegdec
 - espressif/esp-dsp
 - espressif/esp_tinyusb
 - idf
-manifest_hash: 38675423911b5871c484f1051c6447c1eaec605a38acc1f3cd033064ecb022ae
+manifest_hash: b99df336709cda657c88db0e187a1ac5e91526b44f27a1efb7d45fa5a7054a6a
 target: esp32s3
 version: 2.0.0
