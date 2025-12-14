@@ -4,3 +4,6 @@
 [submodule "components/bb_rtc"]
 	path = components/bb_rtc
 	url = https://github.com/bitbank2/bb_rtc.git
+[submodule "components/jpegdec"]
+	path = components/jpegdec
+	url = https://github.com/bitbank2/JPEGDEC.git
