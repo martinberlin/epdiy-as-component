@@ -3,12 +3,14 @@
 * This demo showcases BLE GATT server. It can send adv data, be connected by client CALE.es (Only Chrome example)
 *
 *****************************************************************************************************************/
-#define TEST_DEVICE_NAME "BLE_JPG_103"
+#define TEST_DEVICE_NAME "BLE_JPG_13"
 #define ADC_VOLTAGE_READ
 
 #include "driver/rtc_io.h"
 #define RV3032_INT_PIN  GPIO_NUM_3
 
+// Sleeps at night with RTC
+#define USE_RTC true
 #include <cstdint>
 #include <inttypes.h>
 #include <stdio.h>
@@ -60,7 +62,7 @@ uint8_t wake_alarm_min = 0;
 volatile bool rtc_alarm_triggered = false;
 
 struct tm myTime;
-bool rtc_enabled = true; // Will be false if rtc.init fails
+bool rtc_enabled = USE_RTC; // Will be false if rtc.init fails
 
 // Copy decoded JPG directly in framebuffer
 // On true for some displays will be mirrored
@@ -1027,9 +1029,9 @@ void app_main(void)
 {
     printf("BLE RTC version 1.1\n");
     
+    //epd_init(&epd_board_v7_103, &ED078KC1, EPD_LUT_64K);
     epd_init(&epd_board_v7_103, &ED078KC1, EPD_LUT_64K);
-    //epd_init(&epd_board_v7, &ED097TC2, EPD_LUT_64K);
-    epd_set_rotation(EPD_ROT_LANDSCAPE);
+    //epd_set_rotation(EPD_ROT_INVERTED_LANDSCAPE);
     epd_set_vcom(1560);
 
     adc_init();
@@ -1037,10 +1039,13 @@ void app_main(void)
     batt_level = adc_read_batt();
     // Init RTC and initialize INT Gpio
     // -1 avoids I2C init since is already done by epdiy component
-    int rc = rtc.init(-1, -1);
+    #if USE_RTC
+     int rc = rtc.init(-1, -1);
+    #endif
     hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
     fb = epd_hl_get_framebuffer(&hl);
-    
+
+    #if USE_RTC
     if (rc != RTC_SUCCESS) {
         rtc_enabled = false;
         printf("Error initializing the RTC. Night Deepsleep disabled\n");
@@ -1067,9 +1072,11 @@ void app_main(void)
         // Create the task with a stack size of 2048 and priority 5
         xTaskCreate(&rtc_alarm_check_task, "rtc_alarm_check_task", 4000, NULL, 5, NULL);
     }
+    
     char date[60];
     sprintf(date, "AWAKE %02d:%02d %d %s Bat %d%%", myTime.tm_hour, myTime.tm_min, myTime.tm_mday, months[myTime.tm_mon], batt_level);
     printf("%s WDAY:%d SLEEP at %02d:%02d\n", date, myTime.tm_wday, sleep_alarm_hour, sleep_alarm_min);
+    #endif
     // Attention: write_text needs the high level API started (epd_hl_init)
     clean_area(0, epd_height()-38, epd_width(), 38, 255);
     write_text(epd_width()-550, epd_height()-10, date, 0);
